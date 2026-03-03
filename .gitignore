@@ -8,3 +8,5 @@
 *.prj
 *.dbf
 *.shx
+__pycache__/
+*.pyc
