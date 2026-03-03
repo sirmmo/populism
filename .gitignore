@@ -3,3 +3,8 @@
 *.zip
 *.pdf
 *.xml
+*.shp
+*.cpg
+*.prj
+*.dbf
+*.shx
