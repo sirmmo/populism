@@ -1,44 +1,35 @@
 # api/router.py
 from ninja import Router
 from django.http import HttpResponse
-
-from django.db.models import Avg, F, Q
+from django.db.models import Avg, Q
 from django.db.models.functions import ExtractYear
-from django.http import HttpResponse
 from io import StringIO, BytesIO
 import csv
-import pandas as pd  # opzionale per Parquet
+import pandas as pd
 from typing import List, Optional, Dict
+from datetime import datetime
 
-from .models import *
-
+from .models import (
+    PartyRegistry,
+    PartyPositioning,
+    PartyResults,
+    ElectionEvent,
+    DataQualityIssues,
+)
 from .schemas import (
     PartyOut, PositionPoint, TimeSeriesOut,
     PopulismPoint, PopulismSeriesOut, QualityIssueOut
 )
-
-from io import StringIO
-import csv
-from datetime import datetime
-from typing import List, Optional, Dict
-from django.http import HttpResponse
-from django.db.models import Q
+from core.services.positioning import pick_value
 
 
 router = Router(tags=["analysis"])
 
-# --- util: default “indice di populismo” (configurabile) ---
-# NB: è una definizione tecnica, non dogma: puoi tarare pesi/dimensioni.
+# --- util: default "indice di populismo" (configurabile) ---
 DEFAULT_POP_WEIGHTS = {
-    # Variabili CHES esemplari (adatta ai nomi delle tue colonne):
-    # più alto -> più populista (orientativamente)
-    "people_v_elite":  0.5,   # people vs elite position
+    "people_v_elite":  0.5,
     "anti_elite_salience": 0.3,
     "corrupt_salience": 0.2,
-    # opzionali: nationalism (+), anti_islam (+), eu_position (se vuoi considerare euroscetticismo),
-    # attenzione: se la scala è invertita, inverti il segno del peso.
-    # "nationalism": 0.2,
-    # "eu_position": -0.1,
 }
 
 def _to_year(val_date) -> int:
@@ -134,12 +125,10 @@ def populism_index(request,
                    source_system: str = "CHES",
                    year_from: Optional[int] = None,
                    year_to: Optional[int] = None):
-    # 1) scegli pesi
     w = DEFAULT_POP_WEIGHTS.copy()
     if weights:
         w.update({k: float(v) for k, v in weights.items()})
 
-    # 2) tira fuori tutte le dimensioni coinvolte
     dims = list(w.keys())
 
     qs = (PartyPositioning.objects
@@ -159,8 +148,6 @@ def populism_index(request,
            .annotate(value=Avg("value")) \
            .order_by("party_id", "year", "dimension")
 
-    # 3) aggrega per (party, year) con somma pesata
-    #    index_{p,y} = sum( w_d * value_{p,y,d} )
     by_party_year = {}
     for r in qs:
         key = (r["party_id"], r["party__short_name"], int(r["year"]))
@@ -170,9 +157,7 @@ def populism_index(request,
             entry["sum"] += float(w[dim]) * float(r["value"])
             entry["count"] += 1
 
-    # 4) costruisci serie + slope/delta semplici
     def slope_10y(points):
-        # linear trend grezzo: (last - first) / span * 10
         if len(points) < 2:
             return 0.0
         years = [p["year"] for p in points]
@@ -183,7 +168,6 @@ def populism_index(request,
     def delta_latest_5y(points):
         if not points:
             return 0.0
-        # prendi ultimo anno e l'anno -5 (o il più vicino precedente)
         last = points[-1]
         y0 = last["year"] - 5
         prevs = [p for p in points if p["year"] <= y0]
@@ -235,7 +219,6 @@ def download_positions_csv(request,
            .annotate(value=Avg("value")) \
            .order_by("party_id", "year")
 
-    # CSV stream
     buff = StringIO()
     writer = csv.writer(buff)
     writer.writerow(["party_id", "party_short_name", "source_system", "dimension", "year", "value"])
@@ -250,7 +233,7 @@ def download_positions_csv(request,
     return response
 
 # -----------------------------------------------------------
-# 5) (Opzionale) Download Parquet
+# 5) Download Parquet
 # -----------------------------------------------------------
 @router.get("/positions/download.parquet")
 def download_positions_parquet(request,
@@ -288,7 +271,6 @@ def download_positions_parquet(request,
         resp["Content-Disposition"] = f'attachment; filename="positions_{country}_{dimension}.parquet"'
         return resp
     except Exception:
-        # fallback CSV se pyarrow non c'è
         buff = StringIO()
         df.to_csv(buff, index=False)
         response = HttpResponse(buff.getvalue(), content_type="text/csv")
@@ -296,7 +278,7 @@ def download_positions_parquet(request,
         return response
 
 # -----------------------------------------------------------
-# 6) Qualità (utile per contestualizzare i trend)
+# 6) Quality issues
 # -----------------------------------------------------------
 @router.get("/quality/issues", response=List[QualityIssueOut])
 def quality_issues(request,
@@ -324,45 +306,51 @@ def quality_issues(request,
         ))
     return out
 
+# -----------------------------------------------------------
+# 7) Matrix indicators CSV
+# -----------------------------------------------------------
 @router.get("/matrix/indicators.csv")
 def matrix_indicators_csv(
     request,
-    date_from: str="1990-01-01",                          # es. "2000-01-01"
-    indicators: Optional[str]="",                   # ?indicators=rile&indicators=people_vs_elite
-    country: Optional[str] = None,           # ISO3
-    election_type: Optional[str] = None,     # 'national_parliament', ...
-    nuts_level: Optional[int] = None,        # 0,1,2,3
-    regions: Optional[str] = None,     # lista NUTS (ITC1, ITC11, ...)
-    positioning_source: Optional[str] = None # "CHES", "Manifesto", ecc.
+    date_from: str = "1990-01-01",
+    indicators: Optional[str] = "",
+    country: Optional[str] = None,
+    election_type: Optional[str] = None,
+    nuts_level: Optional[int] = None,
+    regions: Optional[str] = None,
+    positioning_source: Optional[str] = None,
+    fill_down: bool = False,
 ):
     """
-    Versione CSV di /matrix/indicators:
-    una riga per (election, region, party) con risultati + indicatori scelti.
+    CSV version of /matrix/indicators:
+    one row per (election, region, party) with results + chosen indicators.
+
+    By default positioning values are matched by exact year only.
+    Pass fill_down=true to carry the most recent prior value forward.
     """
 
-    ppd = list(PartyPositioning.objects.all().distinct('dimension').values_list('dimension', flat=True))
-    print(ppd)
-    print(indicators)
+    ppd = list(
+        PartyPositioning.objects.all()
+        .distinct("dimension")
+        .values_list("dimension", flat=True)
+    )
     if len(indicators) == 0:
-        print(indicators)
         indicators = ppd
     else:
-        indicators = indicators.split('|')
+        indicators = indicators.split("|")
     if regions:
-        regions = regions.split('|')
+        regions = regions.split("|")
 
-    # 1) parse date_from
     try:
         dt_from = datetime.fromisoformat(date_from).date()
     except Exception:
         try:
             dt_from = datetime.strptime(date_from, "%Y-%m-%d").date()
         except Exception:
-            raise ValueError("date_from deve essere in formato YYYY-MM-DD")
+            return HttpResponse("date_from must be YYYY-MM-DD", status=400)
 
-    indicator_list = list(set(indicators))  # dedup, ordine non garantito
+    indicator_list = list(set(indicators))
 
-    # 2) filtra eventi elettorali
     ev_qs = ElectionEvent.objects.filter(
         Q(election_date__gte=dt_from) |
         Q(election_date__isnull=True, election_year__gte=dt_from.year)
@@ -372,7 +360,6 @@ def matrix_indicators_csv(
     if election_type:
         ev_qs = ev_qs.filter(election_type=election_type)
 
-    # 3) risultati (PartyResults) su quegli eventi/regioni
     res_qs = (
         PartyResults.objects
         .select_related("party", "election", "region")
@@ -392,7 +379,6 @@ def matrix_indicators_csv(
     res_qs = res_qs.order_by("election__election_date", "region__nuts_code", "party__id")
     results = list(res_qs)
     if not results:
-        # CSV vuoto ma con header minimo
         buff = StringIO()
         writer = csv.writer(buff)
         base_cols = [
@@ -408,7 +394,6 @@ def matrix_indicators_csv(
 
     party_ids = {r.party_id for r in results}
 
-    # 4) carica le posizioni per (party, dimension)
     pos_qs = PartyPositioning.objects.filter(
         party_id__in=party_ids,
         dimension__in=indicator_list,
@@ -425,19 +410,7 @@ def matrix_indicators_csv(
     for key in positions_by_key:
         positions_by_key[key].sort(key=lambda x: x[0])
 
-    def pick_value(party_id: int, dim: str, e_year: int):
-        lst = positions_by_key.get((party_id, dim))
-        if not lst:
-            return None
-        best_val = None
-        best_year = None
-        for y, v in lst:
-            if y <= e_year and (best_year is None or y > best_year):
-                best_year = y
-                best_val = v
-        return best_val
-
-    # 5) CSV in memoria
+    # CSV in memoria
     buff = StringIO()
     writer = csv.writer(buff)
 
@@ -481,9 +454,8 @@ def matrix_indicators_csv(
             r.seats if r.seats is not None else "",
         ]
 
-        # appende gli indicatori scelti
         for dim in indicator_list:
-            val = pick_value(party.id, dim, e_year)
+            val = pick_value(positions_by_key, party.id, dim, e_year, fill_down=fill_down)
             row.append(val if val is not None else "")
 
         writer.writerow(row)
@@ -496,5 +468,3 @@ def matrix_indicators_csv(
     resp = HttpResponse(buff.getvalue(), content_type="text/csv")
     resp["Content-Disposition"] = f'attachment; filename="{filename}"'
     return resp
-
-
