@@ -5,7 +5,7 @@ from datetime import datetime
 from decimal import Decimal
 from io import StringIO
 import csv
-from typing import List, Optional, Dict
+from typing import List, Optional
 
 from core.models import (
     PartyResults,
@@ -14,6 +14,7 @@ from core.models import (
     Coalition,
     CoalitionMembership,
 )
+from core.services.positioning import pick_value
 
 
 def extract_indicators_to_csv(
@@ -26,6 +27,7 @@ def extract_indicators_to_csv(
     positioning_source: Optional[str] = None,
     split_coalitions: bool = False,
     include_original_coalition: bool = False,
+    fill_down: bool = False,
 ):
     # ---- parse date
     dt_from = datetime.fromisoformat(date_from).date()
@@ -80,13 +82,6 @@ def extract_indicators_to_csv(
 
     for k in positions:
         positions[k].sort(key=lambda x: x[0])
-
-    def pick_value(party_id, dim, year):
-        lst = positions.get((party_id, dim))
-        if not lst:
-            return ""
-        best = [v for y, v in lst if y <= year]
-        return best[-1] if best else ""
 
     # ---- preload coalitions (solo se richiesto)
     coalition_index = {}
@@ -151,14 +146,15 @@ def extract_indicators_to_csv(
                     region.nuts_code,
                     region.name_official,
                     pid,
-                    "",  # short_name lo puoi joinare dopo se vuoi
-                    "",  # canonical_name idem
+                    "",
+                    "",
                     float(r.votes_pct) * float(share) if r.votes_pct else "",
                     r.turnout_pct,
                     "",
                 ]
                 for dim in indicator_list:
-                    row.append(pick_value(pid, dim, year))
+                    val = pick_value(positions, pid, dim, year, fill_down=fill_down)
+                    row.append(val if val is not None else "")
                 writer.writerow(row)
 
             if not include_original_coalition:
@@ -180,7 +176,8 @@ def extract_indicators_to_csv(
             r.seats,
         ]
         for dim in indicator_list:
-            row.append(pick_value(r.party.id, dim, year))
+            val = pick_value(positions, r.party.id, dim, year, fill_down=fill_down)
+            row.append(val if val is not None else "")
 
         writer.writerow(row)
 
