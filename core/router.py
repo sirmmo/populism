@@ -32,12 +32,6 @@ DEFAULT_POP_WEIGHTS = {
     "corrupt_salience": 0.2,
 }
 
-def _to_year(val_date) -> int:
-    try:
-        return int(val_date.year)
-    except Exception:
-        return int(val_date)
-
 # -----------------------------------------------------------
 # 1) Parties search/list
 # -----------------------------------------------------------
@@ -270,7 +264,7 @@ def download_positions_parquet(request,
         resp = HttpResponse(bio.read(), content_type="application/octet-stream")
         resp["Content-Disposition"] = f'attachment; filename="positions_{country}_{dimension}.parquet"'
         return resp
-    except Exception:
+    except ImportError:
         buff = StringIO()
         df.to_csv(buff, index=False)
         response = HttpResponse(buff.getvalue(), content_type="text/csv")
@@ -343,10 +337,10 @@ def matrix_indicators_csv(
 
     try:
         dt_from = datetime.fromisoformat(date_from).date()
-    except Exception:
+    except ValueError:
         try:
             dt_from = datetime.strptime(date_from, "%Y-%m-%d").date()
-        except Exception:
+        except ValueError:
             return HttpResponse("date_from must be YYYY-MM-DD", status=400)
 
     indicator_list = list(set(indicators))

@@ -1,8 +1,30 @@
 from django.contrib import admin, messages
+from django.http import HttpResponse
+from django.shortcuts import redirect
+from django.urls import path, reverse
+from django.utils import timezone
+from django.utils.html import format_html
+from django.utils.text import slugify
 
-# Register your models here.
+from core.models import (
+    Coalition,
+    CoalitionMembership,
+    DataExportJob,
+    DataQualityIssues,
+    DimensionDescriptor,
+    ElectionEvent,
+    ElectionEventRegion,
+    ExportPreset,
+    GeoRegion,
+    GeoRegionHierarchy,
+    PartyAlias,
+    PartyPositioning,
+    PartyRegistry,
+    PartyResults,
+    PartySourceMap,
+)
+from core.services.coalitions import coalition_split_csv
 
-from core.models import * 
 
 class PartyAliasInline(admin.TabularInline):
     model = PartyAlias
@@ -25,7 +47,7 @@ admin.site.register(PartyAlias)
 
 class PartySourceMapAdmin(admin.ModelAdmin):
     list_display = ["id", "party", "source_system", "source_party_id"]
-    list_filter = ["source_system", "party__country_code"] 
+    list_filter = ["source_system", "party__country_code"]
 admin.site.register(PartySourceMap, PartySourceMapAdmin)
 
 
@@ -48,11 +70,11 @@ class ElectionEventRegionAdmin(admin.ModelAdmin):
     list_display=['id', 'election', 'region', 'is_reporting_unit']
 admin.site.register(ElectionEventRegion, ElectionEventRegionAdmin)
 
-class PartyResultsdmin(admin.ModelAdmin):
+class PartyResultsAdmin(admin.ModelAdmin):
     search_fields=["party"]
     list_display=["id", "party", "election", "region", "votes_pct", "seats", "turnout_pct", "source_system"]
     list_filter=["party", "election", "region", "party__country_code"]
-admin.site.register(PartyResults, PartyResultsdmin)
+admin.site.register(PartyResults, PartyResultsAdmin)
 
 class PartyPositioningAdmin(admin.ModelAdmin):
     list_display=["id",'party','dimension', 'value', 'source_system', 'valid_from']
@@ -70,11 +92,6 @@ admin.site.register(DataQualityIssues, DataQualityIssuesAdmin)
 admin.site.register(DimensionDescriptor)
 
 
-from core.services.coalitions import coalition_split_csv
-from django.http import HttpResponse
-from django.utils.text import slugify
-
-
 @admin.action(description="Export split results CSV")
 def export_split_csv(modeladmin, request, queryset):
     if queryset.count() != 1:
@@ -85,18 +102,16 @@ def export_split_csv(modeladmin, request, queryset):
 
     try:
         csv_text = coalition_split_csv(coalition, include_original=False)
-    except Exception as e:
+    except ValueError as e:
         messages.error(request, f"Errore export CSV: {e}")
         return
 
-    # filename carino
     cname = coalition.coalition_party.short_name or coalition.coalition_party.canonical_name
     fname = f"coalition_split_{coalition.country_code or coalition.election.country_code}_{coalition.election_id}_{slugify(cname) or coalition.id}.csv"
 
     resp = HttpResponse(csv_text, content_type="text/csv; charset=utf-8")
     resp["Content-Disposition"] = f'attachment; filename="{fname}"'
     return resp
-
 
 
 class CoalitionAdmin(admin.ModelAdmin):
@@ -124,15 +139,6 @@ class ExportJobAdmin(admin.ModelAdmin):
 admin.site.register(DataExportJob, ExportJobAdmin)
 
 
-from django.contrib import admin, messages
-from django.urls import path, reverse
-from django.shortcuts import redirect
-from django.utils import timezone
-from django.utils.html import format_html
-
-from core.models import ExportPreset, DataExportJob
-
-
 @admin.register(ExportPreset)
 class ExportPresetAdmin(admin.ModelAdmin):
     list_display = (
@@ -157,6 +163,10 @@ class ExportPresetAdmin(admin.ModelAdmin):
         }),
         ("Coalizioni", {
             "fields": ("split_coalitions", "include_original_coalition"),
+        }),
+        ("Positioning", {
+            "fields": ("fill_down",),
+            "description": "fill_down: carry the most recent prior value forward when no exact year match exists (default: off)."
         }),
         ("Note", {
             "fields": ("notes",),
@@ -190,7 +200,7 @@ class ExportPresetAdmin(admin.ModelAdmin):
             params=preset.to_job_params(),
         )
         messages.success(request, f"Export job #{job.id} creato (PENDING).")
-        return redirect("admin:core_exportjob_changelist")  # cambia namespace/app se diverso
+        return redirect("admin:core_exportjob_changelist")
 
     @admin.action(description="Queue export for selected presets")
     def queue_export_from_preset(self, request, queryset):
