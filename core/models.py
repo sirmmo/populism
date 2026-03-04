@@ -484,6 +484,7 @@ from django.contrib.auth import get_user_model
 
 User = get_user_model()
 
+
 class DataExportJob(models.Model):
     class Status(models.TextChoices):
         PENDING = "pending", "Pending"
@@ -518,8 +519,6 @@ class DataExportJob(models.Model):
         return f"{self.job_type} #{self.id} ({self.status})"
 
 
-from django.db import models
-
 class ExportPreset(models.Model):
     """
     Configurazione salvabile per un export 'extract_indicators'.
@@ -541,6 +540,10 @@ class ExportPreset(models.Model):
 
     split_coalitions = models.BooleanField(default=False)
     include_original_coalition = models.BooleanField(default=False)
+    fill_down = models.BooleanField(
+        default=False,
+        help_text="If True, carry the most recent prior positioning value forward when no exact year match exists.",
+    )
 
     notes = models.TextField(blank=True, null=True)
 
@@ -554,7 +557,6 @@ class ExportPreset(models.Model):
         return self.name
 
     def to_job_params(self):
-        # converte in dict compatibile con extract_indicators_to_csv
         return {
             "date_from": self.date_from.isoformat(),
             "indicators": self.indicators or None,
@@ -565,4 +567,5 @@ class ExportPreset(models.Model):
             "positioning_source": self.positioning_source or None,
             "split_coalitions": self.split_coalitions,
             "include_original_coalition": self.include_original_coalition,
+            "fill_down": self.fill_down,
         }
