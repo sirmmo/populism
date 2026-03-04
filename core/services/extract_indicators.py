@@ -5,9 +5,10 @@ from datetime import datetime
 from decimal import Decimal
 from io import StringIO
 import csv
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from core.models import (
+    PartyRegistry,
     PartyResults,
     PartyPositioning,
     ElectionEvent,
@@ -15,6 +16,26 @@ from core.models import (
     CoalitionMembership,
 )
 from core.services.positioning import pick_value
+
+
+def _allocate_seats(total, shares):
+    """Largest-remainder seat allocation (same logic as coalitions.py)."""
+    if total is None:
+        return [None for _ in shares]
+    if total <= 0:
+        return [0 for _ in shares]
+
+    exact = [Decimal(total) * s for s in shares]
+    floors = [int(e.to_integral_value(rounding="ROUND_FLOOR")) for e in exact]
+    remainder = total - sum(floors)
+
+    frac = [(i, exact[i] - Decimal(floors[i])) for i in range(len(shares))]
+    frac.sort(key=lambda t: t[1], reverse=True)
+
+    alloc = floors[:]
+    for k in range(remainder):
+        alloc[frac[k][0]] += 1
+    return alloc
 
 
 def extract_indicators_to_csv(
@@ -65,31 +86,14 @@ def extract_indicators_to_csv(
 
     results = list(res_qs)
 
-    # ---- preload positioning
-    party_ids = {r.party_id for r in results}
-    pos_qs = PartyPositioning.objects.filter(
-        party_id__in=party_ids,
-        dimension__in=indicator_list,
-    )
-    if positioning_source:
-        pos_qs = pos_qs.filter(source_system=positioning_source)
-
-    positions = {}
-    for p in pos_qs:
-        positions.setdefault((p.party_id, p.dimension), []).append(
-            (p.valid_from.year, float(p.value))
-        )
-
-    for k in positions:
-        positions[k].sort(key=lambda x: x[0])
-
-    # ---- preload coalitions (solo se richiesto)
-    coalition_index = {}
+    # ---- preload coalitions (before positioning so we can include member IDs)
+    coalition_index: Dict[tuple, tuple] = {}
+    member_party_ids: set = set()
     if split_coalitions:
         coalitions = (
             Coalition.objects
             .filter(election__in=ev_qs)
-            .prefetch_related("memberships")
+            .prefetch_related("memberships__member_party")
         )
 
         for c in coalitions:
@@ -110,9 +114,28 @@ def extract_indicators_to_csv(
             shares = [w / total for w in weights]
 
             coalition_index[(c.election_id, c.coalition_party_id)] = (
-                [m.member_party_id for m in members],
+                members,
                 shares,
             )
+            member_party_ids.update(m.member_party_id for m in members)
+
+    # ---- preload positioning (include both result parties and coalition members)
+    party_ids = {r.party_id for r in results} | member_party_ids
+    pos_qs = PartyPositioning.objects.filter(
+        party_id__in=party_ids,
+        dimension__in=indicator_list,
+    )
+    if positioning_source:
+        pos_qs = pos_qs.filter(source_system=positioning_source)
+
+    positions = {}
+    for p in pos_qs:
+        positions.setdefault((p.party_id, p.dimension), []).append(
+            (p.valid_from.year, float(p.value))
+        )
+
+    for k in positions:
+        positions[k].sort(key=lambda x: x[0])
 
     # ---- CSV
     buff = StringIO()
@@ -133,11 +156,18 @@ def extract_indicators_to_csv(
 
         key = (election.id, r.party_id)
 
-        # ---- coalizione?
+        # ---- coalition split
         if split_coalitions and key in coalition_index:
-            member_ids, shares = coalition_index[key]
+            members, shares = coalition_index[key]
+            seat_alloc = _allocate_seats(r.seats, shares)
 
-            for pid, share in zip(member_ids, shares):
+            for idx, (m, share) in enumerate(zip(members, shares)):
+                split_votes = (
+                    float(r.votes_pct) * float(share)
+                    if r.votes_pct is not None else ""
+                )
+                split_seats = seat_alloc[idx] if seat_alloc else ""
+
                 row = [
                     election.id,
                     election.election_date,
@@ -145,22 +175,22 @@ def extract_indicators_to_csv(
                     election.country_code,
                     region.nuts_code,
                     region.name_official,
-                    pid,
-                    "",
-                    "",
-                    float(r.votes_pct) * float(share) if r.votes_pct else "",
+                    m.member_party_id,
+                    m.member_party.short_name or "",
+                    m.member_party.canonical_name,
+                    split_votes,
                     r.turnout_pct,
-                    "",
+                    split_seats if split_seats is not None else "",
                 ]
                 for dim in indicator_list:
-                    val = pick_value(positions, pid, dim, year, fill_down=fill_down)
+                    val = pick_value(positions, m.member_party_id, dim, year, fill_down=fill_down)
                     row.append(val if val is not None else "")
                 writer.writerow(row)
 
             if not include_original_coalition:
                 continue
 
-        # ---- riga normale
+        # ---- normal row
         row = [
             election.id,
             election.election_date,
