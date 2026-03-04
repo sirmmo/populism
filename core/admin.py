@@ -200,7 +200,7 @@ class ExportPresetAdmin(admin.ModelAdmin):
             params=preset.to_job_params(),
         )
         messages.success(request, f"Export job #{job.id} creato (PENDING).")
-        return redirect("admin:core_exportjob_changelist")
+        return redirect("admin:core_dataexportjob_changelist")
 
     @admin.action(description="Queue export for selected presets")
     def queue_export_from_preset(self, request, queryset):
