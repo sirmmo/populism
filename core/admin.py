@@ -71,7 +71,7 @@ class ElectionEventRegionAdmin(admin.ModelAdmin):
 admin.site.register(ElectionEventRegion, ElectionEventRegionAdmin)
 
 class PartyResultsAdmin(admin.ModelAdmin):
-    search_fields=["party"]
+    search_fields=["party__canonical_name", "party__short_name"]
     list_display=["id", "party", "election", "region", "votes_pct", "seats", "turnout_pct", "source_system"]
     list_filter=["party", "election", "region", "party__country_code"]
 admin.site.register(PartyResults, PartyResultsAdmin)
