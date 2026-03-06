@@ -49,6 +49,7 @@ def extract_indicators_to_csv(
     split_coalitions: bool = False,
     include_original_coalition: bool = False,
     fill_down: bool = False,
+    group_by_macro_party: bool = False,
 ):
     # ---- parse date
     dt_from = datetime.fromisoformat(date_from).date()
@@ -73,9 +74,12 @@ def extract_indicators_to_csv(
         ev_qs = ev_qs.filter(election_type=election_type)
 
     # ---- results
+    select_fields = ["party", "election", "region"]
+    if group_by_macro_party:
+        select_fields.append("party__macro_party")
     res_qs = (
         PartyResults.objects
-        .select_related("party", "election", "region")
+        .select_related(*select_fields)
         .filter(election__in=ev_qs)
     )
 
@@ -90,10 +94,13 @@ def extract_indicators_to_csv(
     coalition_index: Dict[tuple, tuple] = {}
     member_party_ids: set = set()
     if split_coalitions:
+        prefetch = ["memberships__member_party"]
+        if group_by_macro_party:
+            prefetch.append("memberships__member_party__macro_party")
         coalitions = (
             Coalition.objects
             .filter(election__in=ev_qs)
-            .prefetch_related("memberships__member_party")
+            .prefetch_related(*prefetch)
         )
 
         for c in coalitions:
@@ -145,8 +152,10 @@ def extract_indicators_to_csv(
         "election_id", "election_date", "election_type",
         "country_code", "region_code", "region_name",
         "party_id", "party_short_name", "party_canonical_name",
-        "votes_pct", "turnout_pct", "seats",
     ]
+    if group_by_macro_party:
+        base_cols += ["macro_party_id", "macro_party_name"]
+    base_cols += ["votes_pct", "turnout_pct", "seats"]
     writer.writerow(base_cols + indicator_list)
 
     for r in results:
@@ -178,6 +187,11 @@ def extract_indicators_to_csv(
                     m.member_party_id,
                     m.member_party.short_name or "",
                     m.member_party.canonical_name,
+                ]
+                if group_by_macro_party:
+                    mp = m.member_party.macro_party
+                    row += [mp.id if mp else "", mp.name if mp else ""]
+                row += [
                     split_votes,
                     r.turnout_pct,
                     split_seats if split_seats is not None else "",
@@ -201,6 +215,11 @@ def extract_indicators_to_csv(
             r.party.id,
             r.party.short_name or "",
             r.party.canonical_name,
+        ]
+        if group_by_macro_party:
+            mp = r.party.macro_party
+            row += [mp.id if mp else "", mp.name if mp else ""]
+        row += [
             r.votes_pct,
             r.turnout_pct,
             r.seats,

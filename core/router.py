@@ -314,6 +314,7 @@ def matrix_indicators_csv(
     regions: Optional[str] = None,
     positioning_source: Optional[str] = None,
     fill_down: bool = False,
+    group_by_macro_party: bool = False,
 ):
     """
     CSV version of /matrix/indicators:
@@ -354,9 +355,12 @@ def matrix_indicators_csv(
     if election_type:
         ev_qs = ev_qs.filter(election_type=election_type)
 
+    select_fields = ["party", "election", "region"]
+    if group_by_macro_party:
+        select_fields.append("party__macro_party")
     res_qs = (
         PartyResults.objects
-        .select_related("party", "election", "region")
+        .select_related(*select_fields)
         .filter(election__in=ev_qs)
     )
 
@@ -379,8 +383,10 @@ def matrix_indicators_csv(
             "election_id", "election_date", "election_type",
             "country_code", "region_code", "region_name",
             "party_id", "party_short_name", "party_canonical_name",
-            "votes_pct", "turnout_pct", "seats",
         ]
+        if group_by_macro_party:
+            base_cols += ["macro_party_id", "macro_party_name"]
+        base_cols += ["votes_pct", "turnout_pct", "seats"]
         writer.writerow(base_cols + indicator_list)
         resp = HttpResponse(buff.getvalue(), content_type="text/csv")
         resp["Content-Disposition"] = 'attachment; filename="matrix_indicators_empty.csv"'
@@ -418,10 +424,10 @@ def matrix_indicators_csv(
         "party_id",
         "party_short_name",
         "party_canonical_name",
-        "votes_pct",
-        "turnout_pct",
-        "seats",
     ]
+    if group_by_macro_party:
+        base_cols += ["macro_party_id", "macro_party_name"]
+    base_cols += ["votes_pct", "turnout_pct", "seats"]
     header = base_cols + indicator_list
     writer.writerow(header)
 
@@ -443,6 +449,11 @@ def matrix_indicators_csv(
             party.id,
             party.short_name or "",
             party.canonical_name,
+        ]
+        if group_by_macro_party:
+            mp = party.macro_party
+            row += [mp.id if mp else "", mp.name if mp else ""]
+        row += [
             float(r.votes_pct) if r.votes_pct is not None else "",
             float(r.turnout_pct) if r.turnout_pct is not None else "",
             r.seats if r.seats is not None else "",

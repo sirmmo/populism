@@ -18,6 +18,7 @@ from core.models import (
     GeoRegion,
     GeoRegionHierarchy,
     PartyAlias,
+    PartyFamily,
     PartyPositioning,
     PartyRegistry,
     PartyResults,
@@ -34,13 +35,20 @@ class PartyResultsInline(admin.TabularInline):
     model = PartyResults
 
 class PartyRegistryAdmin(admin.ModelAdmin):
-    list_display=["id", "canonical_name", "short_name", "country_code", "status"]
-    list_filter=["country_code"]
+    list_display=["id", "canonical_name", "short_name", "country_code", "status", "macro_party"]
+    list_filter=["country_code", "macro_party"]
     inlines = [
         PartyAliasInline,
         PartySourceMapInline
     ]
 admin.site.register(PartyRegistry, PartyRegistryAdmin)
+
+
+class PartyFamilyAdmin(admin.ModelAdmin):
+    list_display = ["id", "name", "description"]
+    search_fields = ["name"]
+
+admin.site.register(PartyFamily, PartyFamilyAdmin)
 
 
 admin.site.register(PartyAlias)
@@ -167,6 +175,10 @@ class ExportPresetAdmin(admin.ModelAdmin):
         ("Positioning", {
             "fields": ("fill_down",),
             "description": "fill_down: carry the most recent prior value forward when no exact year match exists (default: off)."
+        }),
+        ("Raggruppamento macro-partito", {
+            "fields": ("group_by_macro_party",),
+            "description": "Include macro-party grouping columns (macro_party_id, macro_party_name) to analyse party transformations over time."
         }),
         ("Note", {
             "fields": ("notes",),

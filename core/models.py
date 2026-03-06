@@ -2,9 +2,23 @@ from django.db import models
 from datetime import date
 
 class PartyFamily(models.Model):
-    id=models.AutoField(primary_key=True)
-    name = models.CharField(max_length=200)
-    
+    """
+    Macro-party grouping: represents a general political family/tendency
+    so that party naming changes, mergers, splits and transformations
+    can be analysed as a single analytical unit across time.
+    """
+    id = models.AutoField(primary_key=True)
+    name = models.CharField(max_length=200, unique=True)
+    description = models.TextField(blank=True, null=True)
+
+    class Meta:
+        db_table = "party_family"
+        verbose_name = "Macro-Party Grouping"
+        verbose_name_plural = "Macro-Party Groupings"
+
+    def __str__(self):
+        return self.name
+
 
 class PartyRegistry(models.Model):
     class Status(models.TextChoices):
@@ -24,6 +38,14 @@ class PartyRegistry(models.Model):
         max_length=16,
         choices=Status.choices,
         default=Status.ACTIVE,
+    )
+    macro_party = models.ForeignKey(
+        PartyFamily,
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name="parties",
+        help_text="Macro-party grouping for cross-time analysis of party transformations.",
     )
     notes = models.TextField(blank=True, null=True)
 
@@ -544,6 +566,10 @@ class ExportPreset(models.Model):
         default=False,
         help_text="If True, carry the most recent prior positioning value forward when no exact year match exists.",
     )
+    group_by_macro_party = models.BooleanField(
+        default=False,
+        help_text="If True, include macro-party grouping columns (macro_party_id, macro_party_name) in the export.",
+    )
 
     notes = models.TextField(blank=True, null=True)
 
@@ -568,4 +594,5 @@ class ExportPreset(models.Model):
             "split_coalitions": self.split_coalitions,
             "include_original_coalition": self.include_original_coalition,
             "fill_down": self.fill_down,
+            "group_by_macro_party": self.group_by_macro_party,
         }
